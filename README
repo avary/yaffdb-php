@@ -1,0 +1,14 @@
+Proposed features:
+
+1. Database as a directory
+2. Table as a text file
+3. String-typed data
+4. Create/rename/delete tables
+5. Add/rename/remove columns
+6. Insert/update/delete rows
+7. Relational algebras - multi-table join, select, project, union, redefine)
+8. Order relational algebra result by column
+9. Transaction management - commit and rollback support
+10. Shared and exclusive table locks - implementation does not rely on flock()
+11. Crash-on-read does not corrupt data
+12. Crash-on-write is recoverable by calling a repairing function
