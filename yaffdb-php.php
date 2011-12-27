@@ -1,16 +1,6 @@
 <?php
-    /* 
-    ==== Coding Style ====
-    Indentation and brackets: K&R.
-    camoCase for OOP related data/behaviour.
-    underscore_seperated for non-OOP/external data/behaviour.
-    Inline comments use // and punctuations but do not end with full-stop, first letter is in lower-case.
-    Single-line document comments use slash**slash and punctuations but do not end with full-stop, first letter is in upper-case.
-    Multi-line comments use slash**slash and punctuations, first letter is in upper-case.
-    */
-    
     /* Constants */
-    $slash = '/'; // change to \ if you use Windows
+    $slash = '/'; // change to \ if you use Windows 
     $table_exts = array('dat', 'def', 'exc');
     $table_dirs = array('shr');
     $db_columns = array('~del'=>1);
@@ -28,7 +18,7 @@
         fclose($fh);
     }
     
-    /* Truncates or trims the string to the desired size */
+    /* Truncates or trims the string to the desired size. */
     function trim_size($str, $size) {
         if ($size - strlen($str) > 0) {
             return str_pad($str, $size);
@@ -37,7 +27,7 @@
         }
     }
     
-    /* Looks for a value in an array and remove it */
+    /* Looks for a value in an array and removes it. */
     function find_unset(&$array, $val) {
         foreach ($array as $i=>$v) {
             if ($v == $val) {
@@ -46,33 +36,61 @@
         }
     }
     
-    /* Tests if the string ends with the ending */
+    /* Looks for a value in an array and replaces it. */
+    function find_replace(&$array, $val, $replace) {
+        foreach ($array as $i=>$v) {
+            if ($v == $val) {
+                $array[$i] = $replace;
+            }
+        }
+    }
+    
+    /* Tests if the string ends with the ending. */
     function end_with($str, $ending) { // MrHus@StackOverflow
         $length = strlen($ending);
         $start  = $length * -1;
         return (substr($str, $start) === $ending);
     }
     
+    /* Returns the value if it is numeric, otherwise halts. */
+    function ensure_numeric($var) {
+        is_numeric($var) or die("$var is not a number");
+        return $var;
+    }
+    
+    /* Checks if a name may be used as an identifier in database. It gets trimmed as well. */
+    function db_id(&$name) {
+        preg_match('/[~_\-a-z0-9]+/', $name) or die("$name is an invalid name");
+        $name = trim($name);
+    }
+    
     /* ==== Class definitions ==== */
     
     /*
-    Table column and table column definition.
-    Definition is formatted as: (column name),(size)\n
+    Table column and column definition.
+    Column definition uses the following format: (column name),(column size)\n
+    E.g.
+    NAME,10
+    GENDER,1
     */
     class Column {
         public function __construct($name, $size, $offset=0) {
-            $this->name = $name;
+            $this->name   = $name;
             $this->offset = $offset; // column data's position in a table row
-            $this->size = $size; // column data's size
+            $this->size   = $size;   // column data's size
         }
         
         public static function fromDefinition($definition) {
-            $parts = explode(',', trim($definition)); // BOOM
-            return new Column($parts[0], $parts[1]);
+            $parts = explode(',', $definition); // BOOM
+            return new Column(trim($parts[0]), trim(ensure_numeric($parts[1])));
         }
         
         public function getName() {
             return $this->name;
+        }
+        
+        public function setName($name) {
+            $this->name = $name;
         }
         
         public function getOffset() {
@@ -87,6 +105,7 @@
             return $this->size;
         }
         
+        /* Constructs a column definition */
         public function getDefinition() {
             return "{$this->name},{$this->size}";
         }
@@ -99,12 +118,12 @@
     A table has the following files in its database' directory:
     .dat - Data file (spreadsheet)
     .def - Column definitions
-    .exc - Exclusive lock
-    .shr - (Directory) shared locks
+    .exc - Exclusive lock, content is the transaction ID
+    .shr - (Directory) shared locks, each file in the directory is named by the transaction ID
     */
     class Table {
         public function __construct($db, $name) {
-            $this->db = $db;
+            $this->db   = $db;
             $this->name = $name;
             $this->openFileHandle();
             $this->readDefinition();
@@ -130,43 +149,53 @@
             $this->datFH = fopen($this->getDatPath(), 'rb+');
         }
         
+        /* Reads column definitions from .def file. */
         public function readDefinition() {
-            $this->sequence = array();
-            $this->columns = array();
-            $this->lineSize = 0;;
+            $this->sequence = array(); // the sequence (order) of columns
+            $this->columns  = array(); // individual column definition
+            $this->lineSize = 0;       // size of a line (includes \n)
             foreach (file($this->getDefPath()) as $definition) {
                 $column = Column::fromDefinition($definition);
                 $column->setOffset($this->lineSize);
                 $this->sequence[] = $column->getName();
+                $this->lineSize  += $column->getSize();
                 $this->columns[$column->getName()] = $column;
-                $this->lineSize += $column->getSize();
             }
-            ++$this->lineSize;
+            ++$this->lineSize; // the \n counts
         }
         
+        /* Counts the number of rows in table, non-integer indicates corrupted table data. */
         public function count() {
             clearstatcache();
-            return filesize($this->getDatPath()) / $this->getLineSize();
+            $lines = filesize($this->getDatPath()) / $this->getLineSize();
+            return $lines;
         }
         
+        /* Adds a new column. */
         public function add($name, $size) {
+            db_id($name);
             array_key_exists($name, $this->columns) and die("Column $name already exists");
+            // pad each row to leave space for the new column
             if ($this->count() > 0) {
-                $this->padLines($size);
+                $this->pad($size);
             }
             $column = new Column($name, $size, $this->lineSize - 1);
-            $this->sequence[] = $name;
+            $this->sequence[]     = $name;
             $this->columns[$name] = $column;
-            $this->lineSize += $size;
+            $this->lineSize      += $size;
+            // write the definition of the column into the .def file
             write_file($this->getDefPath(), array($column->getDefinition()), true);
         }
         
+        /* Removes a column. */
         public function remove($name) {
             array_key_exists($name, $this->columns) or die("Column $name is not found");
+            // find and remove the definition from .def file
             $lines = array();
             $definition = $this->columns[$name]->getDefinition();
             foreach (file($this->getDefPath()) as $line) {
-                if ($line == $definition) {
+                $line = trim($line);
+                if ($line != $definition) {
                     $lines[] = $line;
                 }
             }
@@ -174,18 +203,24 @@
             $column = $this->columns[$name];
             find_unset($this->sequence, $name);
             unset($this->columns[$name]);
+            // remove the data of the removed column
             if ($this->count() > 0) {
                 $this->cut($column->getOffset(), $column->getOffset() + $column->getSize());
             }
             $this->lineSize -= $column->getSize();
         }
         
+        /* Renames a column. */
         public function rename($old_name, $new_name) {
+            db_id($new_name);
             array_key_exists($old_name, $this->columns) or die("Column $old_name is not found");
             array_key_exists($new_name, $this->columns) and die("Column $new_name already exists");
+            // find and re-write the definition in .def file
             $lines = array();
-            $definition = $this->columns[$name]->getDefinition();
+            $column = $this->columns[$old_name];
+            $definition = $column->getDefinition();
             foreach (file($this->getDefPath()) as $line) {
+                $line = trim($line);
                 if ($line == $definition) {
                     $size = $this->columns[$old_name]->getSize();
                     $lines[] = "$new_name,$size";
@@ -194,13 +229,19 @@
                 }
             }
             write_file($this->getDefPath(), $lines);
+            $column->setName($new_name);
+            find_replace($this->sequence, $old_name, $new_name);
+            unset($this->columns[$old_name]);
+            $this->columns[$new_name] = $column;
         }
         
+        /* Seeks the .dat file handle to the beginning of the row. */
         public function seek($number) {
             $number < $this->count() or die("Row number $number is out of boundary");
             fseek($this->datFH, $number * $this->lineSize, 0);
         }
         
+        /* Reads a row, returns an array. */
         public function read($number) {
             $this->seek($number);
             $line = fgets($this->datFH);
@@ -212,12 +253,14 @@
             return $row;
         }
         
+        /* Seeks the .dat file handle to the row and beginning of the column. */
         public function seekColumn($number, $name) {
             array_key_exists($name, $this->columns) or die("Column $name is not found");
             $this->seek($number);
             fseek($this->datFH, $this->columns[$name]->getOffset(), 1);
         }
         
+        /* Inserts a row. */
         public function insert($row) {
             $line = '';
             foreach ($this->sequence as $name) {
@@ -229,6 +272,7 @@
             fwrite($this->datFH, $line);
         }
         
+        /* Updates the row at the row number. */
         public function update($number, $row) {
             foreach($row as $name=>$val) {
                 if (!array_key_exists($name, $this->columns)) {
@@ -240,19 +284,23 @@
             }
         }
         
+        /* Deletes the row at the row number. */
         public function delete($number) {
             array_key_exists('~del', $this->columns) or die("Column defition of ~del is missing");
+            // set ~del to y
             $this->seekColumn($number, '~del');
             fwrite($this->datFH, trim_size('y', $this->columns['~del']->getSize()));
         }
         
+        /* Flushes .dat file. */
         public function flush() {
             clearstatcache();
             fclose($this->datFH);
             $this->openFileHandle();
         }
         
-        private function padLines($padding) {
+        /* Pads spaces to all rows in the table to leave space for a new column. */
+        private function pad($padding) {
             $desired_size = $this->lineSize + $padding - 1;
             $lines = array();
             foreach (file($this->getDatPath()) as $line) {
@@ -261,12 +309,11 @@
             write_file($this->getDatPath(), $lines);
         }
         
+        /* Removes data of a removed column. */
         private function cut($begin, $end) {
             $lines = array();
             foreach (file($this->getDatPath()) as $line) {
                 $lines[] = rtrim(substr($line, 0, $begin).substr($line, $end, strlen($line) - $begin - 1), "\n");
-                echo "Outputing:\n";
-                var_dump(substr($line, 0, $begin).substr($line, $end, strlen($line) - $begin - 1));
             }
             write_file($this->getDatPath(), $lines);
         }
@@ -278,6 +325,7 @@
         private $db, $name, $sequence, $columns, $datFH, $lineSize;
     }
     
+    /* Database is a directory. */
     class Database {
         public function __construct($dir) {
             global $slash;
@@ -304,8 +352,10 @@
         }
         
         public function create($name) {
+            db_id($name);
             global $slash, $table_exts, $table_dirs, $db_columns;
             array_key_exists($name, $this->tables) and die("Table $name already exists");
+            // create the files and directories for the new table
             foreach ($table_exts as $ext) {
                 write_file("{$this->dir}$slash$name.$ext");
             }
@@ -331,10 +381,17 @@
     $tab->insert(array('c1'=>'c', 'c2'=>'d'));
     $tab->add('c3', 10);
     $tab->insert(array('c3'=>'aaa'));
-    // $tab->remove('c3');
-    $tab->insert(array('c3'=>'bbb'));
-    $tab->insert(array('c3'=>'ccc'));
+    $tab->remove('c3');
+    $tab->insert(array('c2'=>'bbb'));
+    $tab->insert(array('c2'=>'ccc'));
     $tab->delete(0);
     $tab->update(1, array('c1'=>'new!'));
     echo $tab->count();
+    $tab->rename('c2', 'cnew');
+    var_dump($tab);
+    var_dump($tab->read(0));
+    var_dump($tab->read(1));
+    var_dump($tab->read(2));
+    var_dump($tab->read(3));
+    var_dump($tab->read(4));
 ?>
