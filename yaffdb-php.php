@@ -64,6 +64,24 @@
         $name = trim($name);
     }
     
+    /* Recursively removes all files in a directory, and the directory itself. */
+    function rrmdir($dir) { // holger1 at NOSPAMzentralplan dot de
+        if (is_dir($dir)) {
+            $objects = scandir($dir);
+            foreach ($objects as $object) {
+                if ($object != '.' && $object != '..') {
+                    $file = "$dir$slash$object";
+                    if (filetype($file) == 'dir')
+                        rrmdir($file);
+                    else
+                        unlink($file);
+                }
+            }
+            reset($objects);
+            rmdir($dir);
+        }
+    }
+    
     /* ==== Class definitions ==== */
     
     /*
@@ -125,12 +143,16 @@
         public function __construct($db, $name) {
             $this->db   = $db;
             $this->name = $name;
-            $this->openFileHandle();
+            $this->open();
             $this->readDefinition();
         }
         
         public function getName() {
             return $this->name;
+        }
+        
+        public function setName($name) {
+            $this->name = $name;
         }
         
         public function getDatPath() {
@@ -145,7 +167,8 @@
             return $this->lineSize;
         }
         
-        public function openFileHandle() {
+        /* Opens file handle(s). */
+        public function open() {
             $this->datFH = fopen($this->getDatPath(), 'rb+');
         }
         
@@ -211,7 +234,7 @@
         }
         
         /* Renames a column. */
-        public function rename($old_name, $new_name) {
+        public function alter($old_name, $new_name) {
             db_id($new_name);
             array_key_exists($old_name, $this->columns) or die("Column $old_name is not found");
             array_key_exists($new_name, $this->columns) and die("Column $new_name already exists");
@@ -222,7 +245,7 @@
             foreach (file($this->getDefPath()) as $line) {
                 $line = trim($line);
                 if ($line == $definition) {
-                    $size = $this->columns[$old_name]->getSize();
+                    $size    = $this->columns[$old_name]->getSize();
                     $lines[] = "$new_name,$size";
                 } else {
                     $lines[] = $line;
@@ -247,7 +270,7 @@
             $line = fgets($this->datFH);
             $row = array();
             foreach ($this->sequence as $name) {
-                $column = $this->columns[$name];
+                $column     = $this->columns[$name];
                 $row[$name] = substr($line, $column->getOffset(), $column->getSize());
             }
             return $row;
@@ -265,7 +288,7 @@
             $line = '';
             foreach ($this->sequence as $name) {
                 $column = $this->columns[$name];
-                $line .= trim_size(array_key_exists($name, $row) ? $row[$name] : '', $column->getSize());
+                $line  .= trim_size(array_key_exists($name, $row) ? $row[$name] : '', $column->getSize());
             }
             $line .= "\n";
             fseek($this->datFH, 0, 2);
@@ -292,11 +315,16 @@
             fwrite($this->datFH, trim_size('y', $this->columns['~del']->getSize()));
         }
         
-        /* Flushes .dat file. */
-        public function flush() {
+        /* Closes all opened file handles. */
+        public function close() {
             clearstatcache();
             fclose($this->datFH);
-            $this->openFileHandle();
+        }
+        
+        /* Flushes .dat file. */
+        public function flush() {
+            $this->close();
+            $this->open();
         }
         
         /* Pads spaces to all rows in the table to leave space for a new column. */
@@ -319,13 +347,13 @@
         }
         
         public function __desctruct() {
-            fclose($datFH);
+            $this->close();
         }
         
         private $db, $name, $sequence, $columns, $datFH, $lineSize;
     }
     
-    /* Database is a directory. */
+    /* Database is a directory in file system. */
     class Database {
         public function __construct($dir) {
             global $slash;
@@ -351,6 +379,7 @@
             return $this->tables[$name];
         }
         
+        /* Creates a table. */
         public function create($name) {
             db_id($name);
             global $slash, $table_exts, $table_dirs, $db_columns;
@@ -367,6 +396,46 @@
                 $table->add($column, $size);
             }
             return $table;
+        }
+        
+        /* Renames a table. */
+        public function rename($old_name, $new_name) {
+            global $slash;
+            db_id($new_name);
+            array_key_exists($old_name, $this->tables) or die("Table $old_name does not exist");
+            array_key_exists($new_name, $this->tables) and die("Table $new_name already exists");
+            $tab = $this->tables[$old_name];
+            $tab->close();
+            sleep(1); // Martin Pelletier 05-Feb-2011 06:01
+            foreach (scandir($this->dir) as $path) {
+                if ($path != '.' && $path != '..') {
+                    $path_parts = pathinfo($path);
+                    rename("{$this->dir}$path", "{$this->dir}$new_name.{$path_parts['extension']}");
+                }
+            }
+            $tab->setName($new_name);
+            $tab->open();
+            $this->tables[$new_name] = $tab;
+            unset($this->tables[$old_name]);
+        }
+        
+        /* Drops a table. */
+        public function drop($name) {
+            array_key_exists($name, $this->tables) or die("Table $name does not exist");
+            $tab = $this->tables[$name];
+            $tab->close();
+            foreach (scandir($this->dir) as $path) {
+                $path_parts = pathinfo($path);
+                echo $path_parts['filename'];
+                if ($path_parts['filename'] == $name) {
+                    $path = "{$this->dir}$path";
+                    if (is_file($path)) {
+                        unlink($path);
+                    } else {
+                        rrmdir($path);
+                    }
+                }
+            }
         }
         
         private $dir, $tables;
@@ -387,11 +456,7 @@
     $tab->delete(0);
     $tab->update(1, array('c1'=>'new!'));
     echo $tab->count();
-    $tab->rename('c2', 'cnew');
-    var_dump($tab);
-    var_dump($tab->read(0));
-    var_dump($tab->read(1));
-    var_dump($tab->read(2));
-    var_dump($tab->read(3));
-    var_dump($tab->read(4));
+    $tab->alter('c2', 'cnew');
+    $db->rename('t1', 't2');
+    $db->drop('t2');
 ?>
